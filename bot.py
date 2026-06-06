@@ -94,6 +94,66 @@ async def gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Gemini Error:\n{str(e)}"
         )
 
+def list_project_files():
+
+    project_dir = Path(PROJECT_DIR)
+
+    important_paths = [
+        "README.md",
+        "CLAUDE.md",
+        "requirements.txt",
+        "configs",
+        "memory",
+        "scripts",
+        "tests"
+    ]
+
+    files = []
+
+    for item in important_paths:
+
+        path = project_dir / item
+
+        if not path.exists():
+            continue
+
+        if path.is_file():
+
+            files.append(item)
+
+        else:
+
+            for f in sorted(path.rglob("*")):
+
+                if not f.is_file():
+                    continue
+
+                # Skip cache files
+                if "__pycache__" in f.parts:
+                    continue
+
+                if ".pytest_cache" in f.parts:
+                    continue
+
+                if f.suffix == ".pyc":
+                    continue
+
+                files.append(
+                    str(f.relative_to(project_dir))
+                )
+
+    return "\n".join(files)
+
+async def project_files(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE):
+
+    files = list_project_files()
+
+    await send_long_message(
+        update,
+        files
+    )
+
 async def build(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
@@ -188,6 +248,41 @@ async def review(update, context):
         response
     )
 
+async def next_task(update: Update,
+                    context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "Identifying next task..."
+    )
+
+    prompt = """
+Based on:
+- roadmap.md
+- current_state.md
+- source code
+- tests
+
+Recommend exactly ONE next task.
+
+Explain:
+1. Why it should be next
+2. Expected benefit
+3. Estimated effort (Low/Medium/High)
+4. Files likely to change
+
+Provide a clear recommendation.
+"""
+
+    response = await asyncio.to_thread(
+        ask_gemini,
+        prompt
+    )
+
+    await send_long_message(
+        update,
+        response
+    )    
+
 def main():
     app = (
     Application.builder()
@@ -208,6 +303,8 @@ def main():
     app.add_handler(CommandHandler("current_state", current_state))
     app.add_handler(CommandHandler("roadmap", roadmap))
     app.add_handler(CommandHandler("review", review))
+    app.add_handler(CommandHandler("project_files",project_files))
+    app.add_handler(CommandHandler("next_task", next_task))
 
     print("Telegram Agent Started...")
 

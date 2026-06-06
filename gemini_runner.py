@@ -12,6 +12,8 @@ MEMORY_FILES = [
     "memory/project_summary.md",
     "memory/current_state.md",
     "memory/roadmap.md",
+    "memory/session_notes.md",
+    "requirements.txt",
     "scripts/lane_detector.py",
     "configs/lane_detection.yaml",
     "tests/test_pipeline.py",
