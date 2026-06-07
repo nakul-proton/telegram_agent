@@ -8,3 +8,9 @@ venv/
 # Secrets
 config.py
 Gemini_APIKey_ReqData.txt
+
+# Build artifacts
+generated/
+
+# Local backups
+backups/
