@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pathlib import Path
 from config import BOT_TOKEN, PROJECT_DIR
+from frame_analyzer import analyze_frames
 
 async def send_long_message(update, text):
 
@@ -339,6 +340,30 @@ async def pytest_command(update, context):
     await send_long_message(
         update,
         result
+    )
+
+async def analyze_frames_command(update, context):
+
+    await update.message.reply_text(
+        "Analyzing frames..."
+    )
+
+    try:
+
+        result = await asyncio.to_thread(
+            analyze_frames
+        )
+
+    except Exception as e:
+
+        result = (
+            "Frame Analysis Error:\n"
+            f"{e}"
+        )
+
+    await send_long_message(
+        update,
+        result
     )    
 
 def main():
@@ -366,6 +391,7 @@ def main():
     app.add_handler(CommandHandler("build", build))
     app.add_handler(CommandHandler("approve",approve))
     app.add_handler(CommandHandler("pytest",pytest_command))
+    app.add_handler(CommandHandler("analyze_frames", analyze_frames_command))
 
     print("Telegram Agent Started...")
 
