@@ -1,7 +1,12 @@
 import asyncio
 from urllib import response
 from claude_runner import ask_claude, build_with_claude
-from gemini_runner import ask_gemini
+from gemini_runner import (
+    ask_gemini,
+    build_file,
+    approve_build,
+    run_pytest,
+)
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pathlib import Path
@@ -281,6 +286,59 @@ Provide a clear recommendation.
     await send_long_message(
         update,
         response
+    )
+
+async def build(update, context):
+
+    task = " ".join(context.args)
+
+    if not task:
+
+        await update.message.reply_text(
+            "Usage:\n/build <task>"
+        )
+        return
+
+    await update.message.reply_text(
+        "Generating file..."
+    )
+
+    path = await asyncio.to_thread(
+        build_file,
+        task
+    )
+
+    await update.message.reply_text(
+        f"Generated:\n{path}"
+    )
+
+async def approve(update, context):
+
+    await update.message.reply_text(
+        "Applying generated file..."
+    )
+
+    result = await asyncio.to_thread(
+        approve_build
+    )
+
+    await update.message.reply_text(
+        result
+    )
+
+async def pytest_command(update, context):
+
+    await update.message.reply_text(
+        "Running pytest..."
+    )
+
+    result = await asyncio.to_thread(
+        run_pytest
+    )
+
+    await send_long_message(
+        update,
+        result
     )    
 
 def main():
@@ -305,6 +363,9 @@ def main():
     app.add_handler(CommandHandler("review", review))
     app.add_handler(CommandHandler("project_files",project_files))
     app.add_handler(CommandHandler("next_task", next_task))
+    app.add_handler(CommandHandler("build", build))
+    app.add_handler(CommandHandler("approve",approve))
+    app.add_handler(CommandHandler("pytest",pytest_command))
 
     print("Telegram Agent Started...")
 
