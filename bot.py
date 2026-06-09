@@ -5,6 +5,7 @@ from gemini_runner import (
     ask_gemini,
     build_file,
     approve_build,
+    build_project,
     run_pytest,
 )
 from telegram import Update
@@ -304,14 +305,31 @@ async def build(update, context):
         "Generating file..."
     )
 
-    path = await asyncio.to_thread(
-        build_file,
+    result = await asyncio.to_thread(
+        build_project,
         task
     )
 
-    await update.message.reply_text(
-        f"Generated:\n{path}"
+    files = result["files"]
+
+    message = (
+        f"Build Complete\n\n"
+        f"Files Modified: {len(files)}\n\n"
     )
+
+    message += "\n".join(files[:20])
+
+    await update.message.reply_text(
+        message
+    )
+
+    summary = result["summary"]
+
+    if summary:
+        await send_long_message(
+        update,
+        summary
+        )
 
 async def approve(update, context):
 
