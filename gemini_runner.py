@@ -1,3 +1,4 @@
+from pyexpat.errors import messages
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -129,10 +130,38 @@ def approve_build():
 
     messages = verification["messages"]
 
-    return (
-            "Verification successful\n\n"
-            + "\n".join(messages)
+    backup_dir, backed_up = (
+        backup_existing_files()
     )
+
+    applied = apply_generated_files()
+
+    report = (
+        "Approval successful\n\n"
+    )
+
+    report += (
+        "Verification:\n"
+    )
+
+    for msg in messages:
+        report += f"✓ {msg}\n"
+
+    report += "\n"
+
+    report += (
+        f"Backup Folder:\n"
+        f"{backup_dir}\n\n"
+    )
+
+    report += (
+        "Applied Files:\n"
+    )
+
+    for f in applied:
+        report += f"✓ {f}\n"
+
+    return report
 
     project_file = (
         Path(PROJECT_DIR)
@@ -432,4 +461,208 @@ def verify_build():
     return {
         "success": True,
         "messages": messages,
+    }
+
+def get_generated_files():
+
+    generated_root = (
+        Path.home()
+        / "telegram_agent"
+        / "generated"
+    )
+
+    files = []
+
+    for f in generated_root.rglob("*"):
+
+        if not f.is_file():
+            continue
+
+        if "__pycache__" in f.parts:
+            continue
+
+        if f.suffix == ".pyc":
+            continue
+
+        rel_path = f.relative_to(generated_root)
+
+        if rel_path.name == "build_summary.md":
+            continue
+
+        files.append(rel_path)
+
+    return files
+
+def create_backup_folder():
+
+    backup_root = (
+        Path.home()
+        / "telegram_agent"
+        / "backups"
+    )
+
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup_dir = (
+        backup_root
+        / timestamp
+    )
+
+    backup_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    return backup_dir
+
+def backup_existing_files():
+
+    backup_dir = create_backup_folder()
+
+    backed_up = []
+
+    for rel_path in get_generated_files():
+
+        source_file = (
+            PROJECT_DIR
+            / rel_path
+        )
+
+        if not source_file.exists():
+            continue
+
+        backup_file = (
+            backup_dir
+            / rel_path
+        )
+
+        backup_file.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        shutil.copy2(
+            source_file,
+            backup_file
+        )
+
+        backed_up.append(
+            str(rel_path)
+        )
+
+    return backup_dir, backed_up
+
+def apply_generated_files():
+
+    generated_root = (
+        Path.home()
+        / "telegram_agent"
+        / "generated"
+    )
+
+    applied = []
+
+    for rel_path in get_generated_files():
+
+        source_file = (
+            generated_root
+            / rel_path
+        )
+
+        target_file = (
+            PROJECT_DIR
+            / rel_path
+        )
+
+        target_file.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        shutil.copy2(
+            source_file,
+            target_file
+        )
+
+        applied.append(
+            str(rel_path)
+        )
+
+    return applied
+
+def get_latest_backup():
+
+    backup_root = (
+        Path.home()
+        / "telegram_agent"
+        / "backups"
+    )
+
+    if not backup_root.exists():
+
+        return None
+
+    backup_dirs = [
+        d
+        for d in backup_root.iterdir()
+        if d.is_dir()
+    ]
+
+    if not backup_dirs:
+
+        return None
+
+    return sorted(
+        backup_dirs
+    )[-1]
+
+def rollback_latest_backup():
+
+    latest_backup = get_latest_backup()
+
+    if latest_backup is None:
+
+        return {
+            "success": False,
+            "message": "No backups found."
+        }
+
+    restored = []
+
+    for source_file in latest_backup.rglob("*"):
+
+        if not source_file.is_file():
+            continue
+
+        rel_path = (
+            source_file.relative_to(
+                latest_backup
+            )
+        )
+
+        target_file = (
+            PROJECT_DIR
+            / rel_path
+        )
+
+        target_file.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        shutil.copy2(
+            source_file,
+            target_file
+        )
+
+        restored.append(
+            str(rel_path)
+        )
+
+    return {
+        "success": True,
+        "backup": str(latest_backup),
+        "restored": restored,
     }

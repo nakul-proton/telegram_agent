@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from pathlib import Path
 from config import BOT_TOKEN, PROJECT_DIR
 from frame_analyzer import analyze_frames
+from gemini_runner import rollback_latest_backup
 
 async def send_long_message(update, text):
 
@@ -382,7 +383,40 @@ async def analyze_frames_command(update, context):
     await send_long_message(
         update,
         result
-    )    
+    )
+
+async def rollback(update, context):
+
+    await update.message.reply_text(
+        "Rolling back..."
+    )
+
+    result = await asyncio.to_thread(
+        rollback_latest_backup
+    )
+
+    if not result["success"]:
+
+        await update.message.reply_text(
+            result["message"]
+        )
+        return
+
+    message = (
+        "Rollback successful\n\n"
+        f"Source:\n"
+        f"{result['backup']}\n\n"
+        "Restored Files:\n"
+    )
+
+    for f in result["restored"]:
+
+        message += f"✓ {f}\n"
+
+    await send_long_message(
+        update,
+        message
+    )
 
 def main():
     app = (
@@ -410,6 +444,7 @@ def main():
     app.add_handler(CommandHandler("approve",approve))
     app.add_handler(CommandHandler("pytest",pytest_command))
     app.add_handler(CommandHandler("analyze_frames", analyze_frames_command))
+    app.add_handler(CommandHandler("rollback", rollback))
 
     print("Telegram Agent Started...")
 
