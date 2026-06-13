@@ -6,18 +6,22 @@ from google import genai
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
-    PROJECT_DIR,
+    PROJECT_DIR_DEFAULT,
 )
 import subprocess
 import yaml
+import json
 from build_parser import (
     parse_generated_files,
     save_generated_files,
+    save_build_to_history,
+    get_active_project,
 )
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-PROJECT_DIR = Path(PROJECT_DIR)
+# Keep for backward compatibility
+PROJECT_DIR = Path(PROJECT_DIR_DEFAULT)
 
 MEMORY_FILES = [
     "README.md",
@@ -39,13 +43,24 @@ MEMORY_FILES = [
 ]
 
 
-def build_project_context():
-
+def build_project_context(project: dict = None):
+    """
+    Build project context from memory files.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    """
+    
+    if project is None:
+        project = get_active_project()
+    
+    project_dir = Path(project["path"])
     context = ""
 
     for file in MEMORY_FILES:
 
-        path = PROJECT_DIR / file
+        path = project_dir / file
 
         if path.exists():
 
@@ -55,9 +70,17 @@ def build_project_context():
     return context
 
 
-def ask_gemini(prompt):
+def ask_gemini(prompt, project: dict = None):
+    """
+    Ask Gemini with project context.
+    
+    Args:
+        prompt: User question
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    """
 
-    project_context = build_project_context()
+    project_context = build_project_context(project)
 
     full_prompt = f"""
 You are assisting with a software project.
@@ -76,9 +99,21 @@ User Request:
 
     return response.text
 
-def build_file(task):
+def build_file(task, project: dict = None):
+    """
+    Build a single file (lane_detector.py).
+    
+    Args:
+        task: Build task description
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    """
 
-    project_context = build_project_context()
+    if project is None:
+        project = get_active_project()
+
+    project_context = build_project_context(project)
+    project_name = project["name"]
 
     prompt = f"""
 You are a senior Python engineer.
@@ -105,9 +140,11 @@ Return only Python code.
         contents=prompt
     )
 
-    generated_dir = Path.home() / "telegram_agent" / "generated"
+    generated_dir = (
+        Path.home() / "telegram_agent" / "generated" / project_name
+    )
 
-    generated_dir.mkdir(exist_ok=True)
+    generated_dir.mkdir(parents=True, exist_ok=True)
 
     output_file = generated_dir / "lane_detector.py"
 
@@ -115,9 +152,19 @@ Return only Python code.
 
     return str(output_file)
 
-def approve_build():
+def approve_build(project: dict = None):
+    """
+    Approve and apply generated files.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    """
 
-    verification = verify_build()
+    if project is None:
+        project = get_active_project()
+
+    verification = verify_build(project)
 
     if not verification["success"]:
 
@@ -131,10 +178,10 @@ def approve_build():
     messages = verification["messages"]
 
     backup_dir, backed_up = (
-        backup_existing_files()
+        backup_existing_files(project)
     )
 
-    applied = apply_generated_files()
+    applied = apply_generated_files(project)
 
     report = (
         "Approval successful\n\n"
@@ -234,46 +281,94 @@ def run_pytest():
 
         return f"Pytest Error:\n{e}"
     
-def build_project(task):
+def build_project(task, project: dict = None, repair_context: dict = None):
+    """
+    Build project with Gemini.
+    
+    Args:
+        task: Build task description
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+        repair_context: Optional dict with {parent_timestamp, validation_output, error_message}
+                        for /fix_build functionality
+    
+    Returns:
+        {
+            "build_id": "2026-06-13T12-34-56Z",
+            "project": project metadata,
+            "files": [list of files],
+            "summary": "build summary text",
+            "status": "pending" or "failed",
+            "error_type": error type or None,
+            "validation_output": full pytest output
+        }
+    """
 
-    project_context = build_project_context()
+    if project is None:
+        project = get_active_project()
 
-    prompt = f"""
-You are a senior software engineer.
+    project_name = project["name"]
+    project_context = build_project_context(project)
 
-Project Context:
-{project_context}
-
-Task:
-{task}
-
-Generate ALL required file changes.
-
-Use EXACTLY this format:
-
-FILE: scripts/example.py
-<content>
-
-FILE: configs/example.yaml
-<content>
-
-FILE: memory/current_state.md
-<content>
-
-Also generate:
-
-FILE: build_summary.md
-
-The build summary must include:
-
-- Task
-- Files modified
-- Summary of changes
-- Risks
-- Validation steps
-
-Only output FILE sections.
-"""
+    # Construct prompt with optional repair context
+    prompt_parts = [
+        "You are a senior software engineer.",
+        "",
+        "Project Context:",
+        project_context,
+        ""
+    ]
+    
+    if repair_context:
+        prompt_parts.extend([
+            "PREVIOUS BUILD FAILURE (Build to repair):",
+            f"Original Task: {repair_context.get('original_task')}",
+            f"Error Type: {repair_context.get('error_type')}",
+            f"Error Message: {repair_context.get('error_message')}",
+            "",
+            "Previous generated files (these had issues):",
+            repair_context.get('generated_files', ''),
+            "",
+            "Full Validation Output from Previous Attempt:",
+            "---",
+            repair_context.get('validation_output', ''),
+            "---",
+            "",
+        ])
+    
+    prompt_parts.extend([
+        "Task:",
+        task,
+        "",
+        "Generate ALL required file changes.",
+        "",
+        "Use EXACTLY this format:",
+        "",
+        "FILE: scripts/example.py",
+        "<content>",
+        "",
+        "FILE: configs/example.yaml",
+        "<content>",
+        "",
+        "FILE: memory/current_state.md",
+        "<content>",
+        "",
+        "Also generate:",
+        "",
+        "FILE: build_summary.md",
+        "",
+        "The build summary must include:",
+        "",
+        "- Task",
+        "- Files modified",
+        "- Summary of changes",
+        "- Risks",
+        "- Validation steps",
+        "",
+        "Only output FILE sections."
+    ])
+    
+    prompt = "\n".join(prompt_parts)
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -288,6 +383,7 @@ Only output FILE sections.
         Path.home()
         / "telegram_agent"
         / "generated"
+        / project_name
     )
 
     saved_files = save_generated_files(
@@ -304,35 +400,79 @@ Only output FILE sections.
     if summary_file.exists():
         summary_text = summary_file.read_text()
 
+    # Verify build and capture validation output
+    verification = verify_build(project)
+    
+    status = "pending" if verification["success"] else "failed"
+    error_type = verification.get("error_type")
+    error_message = verification.get("error_message")
+    validation_output = verification.get("validation_output", "")
+    
+    # Save build to history
+    build_id = save_build_to_history(
+        project_name=project_name,
+        generated_dir=generated_dir,
+        task=task,
+        status=status,
+        validation_output=validation_output,
+        error_type=error_type,
+        error_message=error_message,
+        parent_timestamp=repair_context.get("parent_timestamp") if repair_context else None
+    )
+
     return {
+        "build_id": build_id,
+        "project": project,
         "files": saved_files,
         "summary": summary_text,
+        "status": status,
+        "error_type": error_type,
+        "validation_output": validation_output
     }
 
-def verify_build():
+def verify_build(project: dict = None):
     """
     Verify generated files before approval.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    
     Returns:
         {
             "success": bool,
-            "messages": [...]
+            "messages": [...],
+            "error_type": "pytest" | "yaml" | "syntax" | None,
+            "error_message": "error details",
+            "validation_output": "full raw output"
         }
     """
+
+    if project is None:
+        project = get_active_project()
+
+    project_name = project["name"]
+    project_path = Path(project["path"])
 
     generated_root = (
         Path.home()
         / "telegram_agent"
         / "generated"
+        / project_name
     )
 
     messages = []
+    validation_output = ""
 
     if not generated_root.exists():
         return {
             "success": False,
             "messages": [
                 "generated directory not found"
-            ]
+            ],
+            "error_type": None,
+            "error_message": None,
+            "validation_output": ""
         }
 
     generated_files = []
@@ -373,12 +513,16 @@ def verify_build():
 
         if result.returncode != 0:
 
+            err_output = result.stdout + "\n" + result.stderr
             return {
                 "success": False,
                 "messages": [
                     f"Python syntax failed: {py_file}",
                     result.stderr,
                 ],
+                "error_type": "syntax",
+                "error_message": f"Syntax error in {py_file}",
+                "validation_output": err_output
             }
 
     messages.append(
@@ -404,12 +548,16 @@ def verify_build():
 
         except Exception as exc:
 
+            err_output = str(exc)
             return {
                 "success": False,
                 "messages": [
                     f"YAML validation failed: {yaml_file}",
                     str(exc),
                 ],
+                "error_type": "yaml",
+                "error_message": f"YAML error in {yaml_file}: {str(exc)}",
+                "validation_output": err_output
             }
 
     messages.append(
@@ -422,16 +570,14 @@ def verify_build():
 
     try:
 
-        lane_project = (
-            Path("/media/nakulrajramesh/LENOVO_USB_HDD/lane_detection")
-        )
-
         result = subprocess.run(
             ["pytest"],
-            cwd=lane_project,
+            cwd=str(project_path),
             capture_output=True,
             text=True,
         )
+
+        validation_output = result.stdout + "\n" + result.stderr
 
         if result.returncode != 0:
 
@@ -442,6 +588,9 @@ def verify_build():
                     result.stdout,
                     result.stderr,
                 ],
+                "error_type": "pytest",
+                "error_message": "pytest validation failed",
+                "validation_output": validation_output
             }
 
         messages.append(
@@ -450,28 +599,54 @@ def verify_build():
 
     except Exception as exc:
 
+        err_output = str(exc)
         return {
             "success": False,
             "messages": [
                 "pytest execution failed",
                 str(exc),
             ],
+            "error_type": "pytest",
+            "error_message": f"pytest execution error: {str(exc)}",
+            "validation_output": err_output
         }
 
     return {
         "success": True,
         "messages": messages,
+        "error_type": None,
+        "error_message": None,
+        "validation_output": validation_output
     }
 
-def get_generated_files():
+def get_generated_files(project: dict = None):
+    """
+    Get list of generated files for a project.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    
+    Returns:
+        list of relative paths (Path objects)
+    """
+
+    if project is None:
+        project = get_active_project()
+
+    project_name = project["name"]
 
     generated_root = (
         Path.home()
         / "telegram_agent"
         / "generated"
+        / project_name
     )
 
     files = []
+
+    if not generated_root.exists():
+        return files
 
     for f in generated_root.rglob("*"):
 
@@ -517,26 +692,34 @@ def create_backup_folder():
 
     return backup_dir
 
-def backup_existing_files():
+def backup_existing_files(project: dict = None):
+    """
+    Backup existing files before approval.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    
+    Returns:
+        (backup_dir, list of backed up files)
+    """
 
+    if project is None:
+        project = get_active_project()
+
+    project_path = Path(project["path"])
     backup_dir = create_backup_folder()
 
     backed_up = []
 
-    for rel_path in get_generated_files():
+    for rel_path in get_generated_files(project):
 
-        source_file = (
-            PROJECT_DIR
-            / rel_path
-        )
+        source_file = project_path / rel_path
 
         if not source_file.exists():
             continue
 
-        backup_file = (
-            backup_dir
-            / rel_path
-        )
+        backup_file = backup_dir / rel_path
 
         backup_file.parent.mkdir(
             parents=True,
@@ -554,17 +737,34 @@ def backup_existing_files():
 
     return backup_dir, backed_up
 
-def apply_generated_files():
+def apply_generated_files(project: dict = None):
+    """
+    Apply generated files to project.
+    
+    Args:
+        project: Project metadata dict {name, path, test_command}
+                 If None, uses active project
+    
+    Returns:
+        list of applied files
+    """
+
+    if project is None:
+        project = get_active_project()
+
+    project_name = project["name"]
+    project_path = Path(project["path"])
 
     generated_root = (
         Path.home()
         / "telegram_agent"
         / "generated"
+        / project_name
     )
 
     applied = []
 
-    for rel_path in get_generated_files():
+    for rel_path in get_generated_files(project):
 
         source_file = (
             generated_root
@@ -572,7 +772,7 @@ def apply_generated_files():
         )
 
         target_file = (
-            PROJECT_DIR
+            project_path
             / rel_path
         )
 

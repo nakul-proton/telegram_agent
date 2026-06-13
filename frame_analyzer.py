@@ -4,7 +4,7 @@ from google import genai
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
-    PROJECT_DIR,
+    PROJECT_DIR_DEFAULT,
 )
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -13,7 +13,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 def analyze_frames():
 
     frames_dir = (
-        Path(PROJECT_DIR)
+        Path(PROJECT_DIR_DEFAULT)
         / "output"
         / "frames"
         / "road_video"

@@ -11,9 +11,16 @@ from gemini_runner import (
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pathlib import Path
-from config import BOT_TOKEN, PROJECT_DIR
+from config import BOT_TOKEN
 from frame_analyzer import analyze_frames
 from gemini_runner import rollback_latest_backup
+from build_parser import (
+    get_active_project,
+    select_project,
+    list_projects,
+    get_latest_failed_build,
+    read_generated_files_as_text,
+)
 
 async def send_long_message(update, text):
 
@@ -103,8 +110,10 @@ async def gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 def list_project_files():
-
-    project_dir = Path(PROJECT_DIR)
+    """List files from active project"""
+    
+    project = get_active_project()
+    project_dir = Path(project["path"])
 
     important_paths = [
         "README.md",
@@ -193,8 +202,10 @@ async def build(update: Update, context: ContextTypes.DEFAULT_TYPE):
        )
 
 def read_file(relative_path):
-
-    path = Path(PROJECT_DIR) / relative_path
+    """Read file from active project"""
+    
+    project = get_active_project()
+    path = Path(project["path"]) / relative_path
 
     if not path.exists():
         return f"File not found: {relative_path}"
@@ -302,23 +313,38 @@ async def build(update, context):
         )
         return
 
+    project = get_active_project()
+    project_name = project["name"]
+
     await update.message.reply_text(
-        "Generating file..."
+        f"Generating build for project: {project_name}..."
     )
 
     result = await asyncio.to_thread(
         build_project,
-        task
+        task,
+        project
     )
 
+    build_id = result.get("build_id", "unknown")
     files = result["files"]
+    status = result.get("status", "unknown")
+    error_type = result.get("error_type")
 
     message = (
-        f"Build Complete\n\n"
+        f"Build Complete [{build_id}]\n"
+        f"Project: {project_name}\n"
+        f"Status: {status}\n\n"
         f"Files Modified: {len(files)}\n\n"
     )
 
+    if error_type:
+        message += f"⚠️  Validation Error Type: {error_type}\n\n"
+
     message += "\n".join(files[:20])
+
+    if len(files) > 20:
+        message += f"\n... and {len(files) - 20} more files"
 
     await update.message.reply_text(
         message
@@ -332,14 +358,141 @@ async def build(update, context):
         summary
         )
 
+async def fix_build(update, context):
+    """
+    Repair the most recent failed build.
+    
+    Usage: /fix_build <repair_task_description>
+    """
+    
+    repair_task = " ".join(context.args)
+    
+    if not repair_task:
+        await update.message.reply_text(
+            "Usage:\n/fix_build <describe the repair needed>\n\n"
+            "Example:\n/fix_build Fix the pytest import error"
+        )
+        return
+    
+    project = get_active_project()
+    project_name = project["name"]
+    
+    await update.message.reply_text(
+        f"Finding latest failed build for {project_name}..."
+    )
+    
+    try:
+        # Find the most recent failed build
+        failed_build = await asyncio.to_thread(
+            get_latest_failed_build,
+            project_name
+        )
+        
+        if not failed_build:
+            await update.message.reply_text(
+                f"No failed builds found for project: {project_name}"
+            )
+            return
+        
+        parent_timestamp = failed_build["timestamp"]
+        metadata = failed_build["metadata"]
+        validation_output = failed_build["validation_output"]
+        generated_dir = failed_build["generated_dir"]
+        
+        await update.message.reply_text(
+            f"Found failed build [{parent_timestamp}]\n"
+            f"Original task: {metadata.get('task', 'N/A')}\n"
+            f"Error type: {metadata.get('error_type', 'N/A')}\n\n"
+            "Loading generated files and constructing repair context..."
+        )
+        
+        # Read generated files as text for context
+        generated_files_text = await asyncio.to_thread(
+            read_generated_files_as_text,
+            generated_dir
+        )
+        
+        # Construct repair context
+        repair_context = {
+            "parent_timestamp": parent_timestamp,
+            "original_task": metadata.get("task"),
+            "error_type": metadata.get("error_type"),
+            "error_message": metadata.get("error_message"),
+            "validation_output": validation_output,
+            "generated_files": generated_files_text
+        }
+        
+        await update.message.reply_text(
+            "Generating repair build..."
+        )
+        
+        # Call build_project with repair context
+        result = await asyncio.to_thread(
+            build_project,
+            repair_task,
+            project,
+            repair_context
+        )
+        
+        build_id = result.get("build_id", "unknown")
+        files = result["files"]
+        status = result.get("status", "unknown")
+        error_type = result.get("error_type")
+        
+        message = (
+            f"Repair Build Complete [{build_id}]\n"
+            f"Parent: [{parent_timestamp}]\n"
+            f"Status: {status}\n\n"
+            f"Files Modified: {len(files)}\n\n"
+        )
+        
+        if error_type:
+            message += f"⚠️  Validation Error Type: {error_type}\n\n"
+        
+        message += "\n".join(files[:20])
+        
+        if len(files) > 20:
+            message += f"\n... and {len(files) - 20} more files"
+        
+        await update.message.reply_text(message)
+        
+        summary = result.get("summary")
+        
+        if summary:
+            await send_long_message(
+                update,
+                summary
+            )
+        
+        # Show next steps
+        if status == "pending":
+            await update.message.reply_text(
+                "Use /approve to apply this repair, "
+                "or /fix_build again to repair further"
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️  Repair has validation errors. "
+                "Use /fix_build again to repair further"
+            )
+    
+    except Exception as e:
+        await update.message.reply_text(
+            f"Fix Build Error:\n{str(e)}"
+        )
+
 async def approve(update, context):
 
+    project = get_active_project()
+    project_name = project["name"]
+
     await update.message.reply_text(
-        "Applying generated file..."
+        f"Applying build for project: {project_name}..."
     )
 
     result = await asyncio.to_thread(
-        approve_build
+        approve_build,
+        project
     )
 
     await update.message.reply_text(
@@ -418,6 +571,37 @@ async def rollback(update, context):
         message
     )
 
+async def select_project(update, context):
+    """Select active project for builds"""
+    
+    if not context.args:
+        
+        active = get_active_project()
+        all_projects = list_projects()
+        
+        message = f"Current project: {active['name']}\n\n"
+        message += "Available projects:\n"
+        for proj in all_projects:
+            message += f"  • {proj}\n"
+        message += "\nUsage: /select_project <project_name>"
+        
+        await update.message.reply_text(message)
+        return
+    
+    project_name = context.args[0]
+    
+    if select_project(project_name):
+        await update.message.reply_text(
+            f"✓ Switched to project: {project_name}"
+        )
+    else:
+        all_projects = list_projects()
+        message = f"Project not found: {project_name}\n\n"
+        message += "Available projects:\n"
+        for proj in all_projects:
+            message += f"  • {proj}\n"
+        await update.message.reply_text(message)
+
 def main():
     app = (
     Application.builder()
@@ -433,16 +617,17 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("agent", agent))
     app.add_handler(CommandHandler("build", build))
+    app.add_handler(CommandHandler("fix_build", fix_build))
+    app.add_handler(CommandHandler("select_project", select_project))
     app.add_handler(CommandHandler("gemini", gemini))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("current_state", current_state))
     app.add_handler(CommandHandler("roadmap", roadmap))
     app.add_handler(CommandHandler("review", review))
-    app.add_handler(CommandHandler("project_files",project_files))
+    app.add_handler(CommandHandler("project_files", project_files))
     app.add_handler(CommandHandler("next_task", next_task))
-    app.add_handler(CommandHandler("build", build))
-    app.add_handler(CommandHandler("approve",approve))
-    app.add_handler(CommandHandler("pytest",pytest_command))
+    app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("pytest", pytest_command))
     app.add_handler(CommandHandler("analyze_frames", analyze_frames_command))
     app.add_handler(CommandHandler("rollback", rollback))
 

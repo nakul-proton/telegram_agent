@@ -1,6 +1,7 @@
 import subprocess
+from config import PROJECT_DIR_DEFAULT
 
-PROJECT_DIR = "/media/nakulrajramesh/LENOVO_USB_HDD/lane_detection"
+PROJECT_DIR = PROJECT_DIR_DEFAULT
 
 def ask_claude(prompt):
 
